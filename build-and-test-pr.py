@@ -66,9 +66,9 @@ class Subsystem(Enum):
     @property
     def functional_test(self) -> str:
         return {
-            Subsystem.HTTP: "interface_http interface_bitcoin_cli rpc_bind",
-            Subsystem.TOR: "feature_torcontrol",
-            Subsystem.PSBT: "rpc_psbt",
+            Subsystem.HTTP: ["interface_http", "interface_bitcoin_cli", "rpc_bind"],
+            Subsystem.TOR: ["feature_torcontrol"],
+            Subsystem.PSBT: ["rpc_psbt"],
         }[self]
 
 
@@ -80,7 +80,7 @@ def run(cmd, **kwargs) -> None:
     if result.returncode != 0:
         print(
             f"\n[FAILED] Command exited with code {result.returncode}: "
-            f"{' '.join(cmd)}",
+            f"\"{' '.join(cmd)}\"",
             file=sys.stderr)
         sys.exit(result.returncode)
 
@@ -140,10 +140,15 @@ def update_checkout(pr_number: int) -> None:
 
 
 def configure_build_and_test(subsystem: Subsystem) -> None:
+    # compilation
     run(CMAKE_BASE)
     run(BUILD_CMD)
+
+    # unit tests
     run(["./build/bin/test_bitcoin", f"--run_test={subsystem.boost_test}"])
-    run(["./build/test/functional/test_runner.py", subsystem.functional_test])
+
+    # functional tests
+    run(["./build/test/functional/test_runner.py", *subsystem.functional_test])
 
 
 def main() -> None:
