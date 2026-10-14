@@ -49,6 +49,11 @@ BUILD_CMD = [
     "bitcoin-cli",
 ]
 
+# Needs `doxygen` and `graphviz` installed *before* configuring, otherwise the
+# `docs` target doesn't exist.
+DOCS_CMD = ["cmake", "--build", "build", "--target", "docs"]
+DOCS_INDEX = "build/doc/doxygen/html/index.html"
+
 
 class Subsystem(Enum):
     HTTP = "http"
@@ -97,7 +102,7 @@ def parse_args() -> argparse.Namespace:
     subsystem_choices = "{" + ",".join(s.value for s in Subsystem) + "}"
 
     parser = argparse.ArgumentParser(
-        usage=f"%(prog)s [-h] [-n] [-u] [pr_number] {subsystem_choices}",
+        usage=f"%(prog)s [-h] [-n] [-u] [-d] [pr_number] {subsystem_choices}",
         description="Fetch, checkout, build and test a Bitcoin Core PR "
         f"for a given subsystem {subsystem_choices}.")
 
@@ -126,6 +131,14 @@ def parse_args() -> argparse.Namespace:
         help="PR branch already exists locally; force-fetch the latest "
         "commits from the author and reset pr-<pr_number> to them "
         "instead of creating it fresh.",
+    )
+
+    parser.add_argument(
+        "-d",
+        "--docs",
+        action="store_true",
+        help="Also generate the Doxygen HTML docs after the tests pass "
+        f"(output: {DOCS_INDEX}). Requires doxygen and graphviz.",
     )
 
     args = parser.parse_args()
@@ -176,7 +189,8 @@ def update_checkout(pr_number: int) -> None:
     run(["git", "checkout", branch])
 
 
-def configure_build_and_test(subsystem: Subsystem) -> None:
+def configure_build_and_test(subsystem: Subsystem,
+                             build_docs: bool = False) -> None:
     # compilation
     run(CMAKE_BASE)
     run(BUILD_CMD)
@@ -186,6 +200,16 @@ def configure_build_and_test(subsystem: Subsystem) -> None:
 
     # functional tests
     run(["./build/test/functional/test_runner.py", *subsystem.functional_test])
+
+    # generate docs
+    if build_docs:
+        run(DOCS_CMD)
+        # get current working directory to make the docs path absolute, so it can be
+        # opened in a browser from anywhere
+        cwd = subprocess.run(["pwd"], capture_output=True, text=True).stdout.strip()
+        global DOCS_INDEX
+        DOCS_INDEX = f"{cwd}/{DOCS_INDEX}"
+        print(f"\nDoxygen docs (open in a browser): file://{DOCS_INDEX}")
 
 
 def main() -> None:
@@ -199,7 +223,7 @@ def main() -> None:
         else:
             fetch_and_checkout(pr_number)
 
-    configure_build_and_test(subsystem)
+    configure_build_and_test(subsystem, build_docs=args.docs)
 
     label = "current checkout" if args.no_git else f"PR #{pr_number}"
     print(f"\n✅ {label} ({subsystem.value}) built and tests passed.")
