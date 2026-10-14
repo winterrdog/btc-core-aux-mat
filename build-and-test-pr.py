@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-
 """
 pr_review.py - Fast local review helper for Bitcoin Core PRs.
 
 Fetches a PR from upstream, checks it out into a dedicated branch, then
 configures/builds with CMake and runs the unit + functional tests relevant
-to the chosen subsystem (http, tor, psbt).
+to the chosen subsystem (http, tor, psbt). Use -n/--no-git to skip the git
+step and test the current checkout as-is.
 
 Works on Linux, FreeBSD and NetBSD (assumes `git`, `cmake`, `clang`/`clang++`
 and a Python 3 interpreter for the functional test runner are on PATH).
@@ -64,9 +64,17 @@ class Subsystem(Enum):
         }[self]
 
     @property
-    def functional_test(self) -> str:
+    def functional_test(self) -> list[str]:
+        # Each entry is passed to test_runner.py as ONE argument. The runner
+        # splits entries on spaces, so a test with extra flags (e.g.
+        # "interface_http --http-unix") is simply a single string here.
         return {
-            Subsystem.HTTP: ["interface_http", "interface_bitcoin_cli", "rpc_bind"],
+            Subsystem.HTTP: [
+                "interface_http",
+                "interface_http --http-unix",
+                "interface_bitcoin_cli",
+                "rpc_bind",
+            ],
             Subsystem.TOR: ["feature_torcontrol"],
             Subsystem.PSBT: ["rpc_psbt"],
         }[self]
@@ -86,21 +94,29 @@ def run(cmd, **kwargs) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    subsystem_choices = "{" + ",".join(s.value for s in Subsystem) + "}"
+
     parser = argparse.ArgumentParser(
+        usage=f"%(prog)s [-h] [-n] [-u] [pr_number] {subsystem_choices}",
         description="Fetch, checkout, build and test a Bitcoin Core PR "
-        "for a given subsystem (http, tor, psbt).")
+        f"for a given subsystem {subsystem_choices}.")
 
     parser.add_argument(
-        "pr_number",
-        type=int,
-        help="Pull request number, e.g. 12345",
+        "target",
+        nargs="+",
+        metavar=f"[pr_number] {subsystem_choices}",
+        help="Pull request number (e.g. 12345) followed by the subsystem to "
+        f"test, one of: {', '.join(s.value for s in Subsystem)}. With "
+        "-n/--no-git only the subsystem is given.",
     )
 
     parser.add_argument(
-        "subsystem",
-        type=str,
-        choices=[s.value for s in Subsystem],
-        help="Subsystem to test",
+        "-n",
+        "--no-git",
+        action="store_true",
+        help="Skip all git operations (fetch/checkout) and just configure, "
+        "build and test whatever is currently checked out. The PR number "
+        "is not needed in this mode.",
     )
 
     parser.add_argument(
@@ -113,8 +129,29 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-    if args.pr_number <= 0:
-        parser.error("pr_number must be a positive integer")
+    subsystems = [s.value for s in Subsystem]
+
+    if args.no_git:
+        if args.update:
+            parser.error("-u/--update cannot be combined with -n/--no-git")
+        if len(args.target) != 1:
+            parser.error("with -n/--no-git, give only the subsystem")
+        args.pr_number = None
+        args.subsystem = args.target[0]
+    else:
+        if len(args.target) != 2:
+            parser.error("expected: pr_number subsystem")
+        try:
+            args.pr_number = int(args.target[0])
+        except ValueError:
+            parser.error(f"invalid pr_number: {args.target[0]!r}")
+        if args.pr_number <= 0:
+            parser.error("pr_number must be a positive integer")
+        args.subsystem = args.target[1]
+
+    if args.subsystem not in subsystems:
+        parser.error(f"invalid subsystem {args.subsystem!r} "
+                     f"(choose from {', '.join(subsystems)})")
     return args
 
 
@@ -155,13 +192,17 @@ def main() -> None:
     args = parse_args()
     pr_number = args.pr_number
     subsystem = Subsystem(args.subsystem)
-    if args.update:
-        update_checkout(pr_number)
-    else:
-        fetch_and_checkout(pr_number)
+
+    if not args.no_git:
+        if args.update:
+            update_checkout(pr_number)
+        else:
+            fetch_and_checkout(pr_number)
 
     configure_build_and_test(subsystem)
-    print(f"\n✅ PR #{pr_number} ({subsystem.value}) built and tests passed.")
+
+    label = "current checkout" if args.no_git else f"PR #{pr_number}"
+    print(f"\n✅ {label} ({subsystem.value}) built and tests passed.")
 
 
 if __name__ == "__main__":
